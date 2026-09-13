@@ -2,7 +2,7 @@
 #  test.yaml — terminal functional test (NO Wi-Fi). Watch state over USB serial.
 #     esphome run test.yaml        # build + flash + open serial logs
 #  Operate the machine and watch the decoded state print once per second:
-#     [dedica] ON=1 | coffee[mode=1 ready=0] | steam[mode=0 ready=0] | btn=0 ...
+#     [dedica] ON=1 | coffee[mode=1 ready=0] | steam[mode=0 ready=0] | press[1cup=0 ...]
 #  Uses the local package file directly, so it tests exactly what ships.
 # =============================================================================
 
@@ -20,7 +20,7 @@ interval:
     then:
       - lambda: |-
           ESP_LOGI("dedica",
-            "ON=%d | coffee[mode=%d ready=%d] | steam[mode=%d ready=%d] | btn=%d 2cup=%d steam=%d",
+            "ON=%d | coffee[mode=%d ready=%d] | steam[mode=%d ready=%d] | press[1cup=%d 2cup=%d steam=%d]",
             id(bs_on).state, id(bs_coffee_mode).state, id(bs_coffee_ready).state,
             id(bs_steam_mode).state, id(bs_steam_ready).state,
-            id(bs_button).state, id(bs_2cup_pressed).state, id(bs_steam_pressed).state);
+            id(bs_1cup_pressed).state, id(bs_2cup_pressed).state, id(bs_steam_pressed).state);

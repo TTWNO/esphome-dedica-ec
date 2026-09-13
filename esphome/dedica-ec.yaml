@@ -54,14 +54,15 @@ globals:
 #  Modes differ by C in the "E+B" scan phase:
 #     0x81 "E...B" (C low)  = coffee   |   0x85 "EC..B" (C high) = steam
 #  A marker held solid >=1.5 s = READY; intermittent = heating (anode B gated).
-#  Buttons raise the A sense line: 0x99 "E.DAB" = 2-cup, 0x95 "EC.AB" = steam.
-#  (1-cup shorts E->GND and blanks the LEDs — no A pulse, so it is not sensed.)
+#  Buttons: 2-cup and steam raise the A sense line (0x99 "E.DAB" = 2-cup,
+#  0x95 "EC.AB" = steam). 1-cup instead shorts line E to ground, so it is
+#  detected by E being held LOW (2-cup/steam keep E high — no overlap).
 interval:
   - interval: 150ms
     then:
       - lambda: |-
           const uint32_t N = 3000;               // ~6 ms @ 500 kHz = >=3 frames
-          uint32_t c_steam = 0, c_coffee = 0, cact = 0, aHi = 0, c2cup = 0, csteam_btn = 0;
+          uint32_t c_steam = 0, c_coffee = 0, cact = 0, c_elow = 0, c2cup = 0, csteam_btn = 0;
           uint32_t nx = ESP.getCycleCount();
           for (uint32_t i = 0; i < N; i++) {
             nx += 480;                            // 240 MHz / 480 = 500 kHz
@@ -71,7 +72,7 @@ interval:
             if (led == 0x85 || led == 0x05) c_steam++;   // EC..B/EC.. (C high) = steam
             else if (led == 0x81) c_coffee++;            // E...B (C low)      = coffee
             if (led) cact++;
-            if (raw & 0x10) aHi++;                // A high = a button is down
+            if (!(raw & 0x01)) c_elow++;          // E low = 1-cup shorts E->GND
             if (raw == 0x99) c2cup++;             // E.DAB = 2-cup press
             if (raw == 0x95) csteam_btn++;        // EC.AB = steam press
           }
@@ -86,7 +87,7 @@ interval:
           id(bs_coffee_mode).publish_state(on && coffee);
           id(bs_steam_ready).publish_state(on && steam  && (now - id(t_not_steam)  > 1500));
           id(bs_coffee_ready).publish_state(on && coffee && (now - id(t_not_coffee) > 1500));
-          id(bs_button).publish_state(aHi > 300);              // any physical button held
+          id(bs_1cup_pressed).publish_state(on && c_elow > (N * 2 / 5)); // E held low = 1-cup
           id(bs_2cup_pressed).publish_state(c2cup > 300);      // 2-cup (E.DAB / 0x99)
           id(bs_steam_pressed).publish_state(csteam_btn > 300);// steam (EC.AB / 0x95)
 
@@ -106,7 +107,7 @@ binary_sensor:
     name: "Steam Heating"
     device_class: heat
     lambda: 'return id(bs_steam_mode).state && !id(bs_steam_ready).state;'
-  - { platform: template, id: bs_button,        name: "Button Pressed" }
+  - { platform: template, id: bs_1cup_pressed,  name: "1-Cup Pressed" }
   - { platform: template, id: bs_2cup_pressed,  name: "2-Cup Pressed" }
   - { platform: template, id: bs_steam_pressed, name: "Steam Pressed" }
 

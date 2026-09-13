@@ -12,7 +12,7 @@ substitutions:
 
 packages:
   # Pull the decoder straight from GitHub, pinned to a release tag.
-  dedica-ec: github://TTWNO/esphome-dedica-ec/esphome/dedica-ec.yaml@v1.0.0
+  dedica-ec: github://TTWNO/esphome-dedica-ec/esphome/dedica-ec.yaml@v1.0.1
 
 wifi:
   ssid: !secret wifi_ssid
