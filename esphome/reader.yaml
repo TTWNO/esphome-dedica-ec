@@ -1,0 +1,107 @@
+# =============================================================================
+#  Dedica EC-series — PIN READER / BURST CAPTURE   (reader.yaml)
+# =============================================================================
+#  Mode: microsecond-resolution DIGITAL burst capture of all six connector
+#  wires, to decode the multiplexed LED/button scan the 50 Hz ADC couldn't see.
+#
+#  How: a tight loop reads GPIO_IN1 (holds GPIO32..39 in one register access)
+#  at ~500 kHz into a RAM buffer for ~12 ms, then dumps it as an edge list
+#  (value:delta) over serial. Fires automatically several times per second, so
+#  a single power-on captures the startup sequence and any button activity.
+#
+#  Pins are DIGITAL inputs here (not ADC): a pin in analog mode wouldn't show
+#  up in the digital input register.
+#
+#  Bit map in each captured byte (mask 0x9F):
+#     bit0 = GPIO32 (E)   bit1 = GPIO33 (unused)   bit2 = GPIO34 (C)
+#     bit3 = GPIO35 (D)   bit4 = GPIO36 (A, button-sense)
+#     bit7 = GPIO39 (B)
+#
+#  Capture:
+#     esphome run  reader.yaml --device /dev/ttyUSB0 --no-logs
+#     esphome logs reader.yaml --device /dev/ttyUSB0 | tee burst.txt
+#     # power the machine ON and let the whole startup play out, then Ctrl-C
+# =============================================================================
+
+esphome:
+  name: dedica-reader
+  friendly_name: Dedica Pin Reader
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          // Force all six probe pins to digital inputs so GPIO_IN1 reflects them.
+          pinMode(32, INPUT);   // E
+          pinMode(33, INPUT);   // F
+          pinMode(34, INPUT);   // C
+          pinMode(35, INPUT);   // D
+          pinMode(36, INPUT);   // A (GND)
+          pinMode(39, INPUT);   // B (Vcc)
+      - logger.log: "===== DEDICA BURST CAPTURE ready — powering the machine now will emit BURST blocks ====="
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: DEBUG
+
+# -----------------------------------------------------------------------------
+# BURST CAPTURE — ~500 kHz digital snapshot of GPIO32..39, dumped as edges.
+# -----------------------------------------------------------------------------
+interval:
+  - interval: 120ms          # fast cadence to reliably catch ~1 s button taps
+    then:
+      - lambda: |-
+          static uint32_t burst_id = 0;
+          const uint32_t N = 6000;              // samples  (~12 ms @ 500 kHz)
+          static uint8_t buf[6000];
+          const uint32_t PERIOD = 480;          // 240 MHz / 480 = 500 kHz
+
+          // --- tight, paced sampling loop ---
+          uint32_t start = ESP.getCycleCount();
+          uint32_t next = start;
+          for (uint32_t i = 0; i < N; i++) {
+            next += PERIOD;
+            while ((int32_t)(ESP.getCycleCount() - next) < 0) { /* spin */ }
+            buf[i] = (uint8_t)(REG_READ(GPIO_IN1_REG) & 0x9F);
+          }
+          uint32_t dur_us = (ESP.getCycleCount() - start) / 240;
+          burst_id++;
+          uint32_t khz = dur_us ? (uint32_t)((uint64_t)N * 1000 / dur_us) : 0;
+
+          ESP_LOGI("brst", "BURST id=%u ms=%u N=%u dur_us=%u khz=%u",
+                   burst_id, (unsigned) millis(), (unsigned) N,
+                   (unsigned) dur_us, (unsigned) khz);
+
+          // --- emit edge list: first token VV@0, then VV:delta_samples ---
+          char line[240];
+          int pos = 0;
+          uint32_t seq = 0, edges = 0;
+          bool trunc = false;
+          uint8_t prev = buf[0];
+          uint32_t last = 0;
+          pos = snprintf(line, sizeof(line), "E %u %u %02x@0",
+                         (unsigned) burst_id, (unsigned) seq++, prev);
+          for (uint32_t i = 1; i < N; i++) {
+            if (buf[i] == prev) continue;
+            uint32_t delta = i - last;
+            last = i;
+            char tok[16];
+            int tl = snprintf(tok, sizeof(tok), " %02x:%u", buf[i], (unsigned) delta);
+            if (pos + tl >= (int) sizeof(line) - 1) {
+              ESP_LOGI("brst", "%s", line);
+              pos = snprintf(line, sizeof(line), "E %u %u",
+                             (unsigned) burst_id, (unsigned) seq++);
+            }
+            memcpy(line + pos, tok, tl);
+            pos += tl;
+            line[pos] = 0;
+            prev = buf[i];
+            edges++;
+            if (edges >= 1500) { trunc = true; break; }
+          }
+          if (pos > 0) ESP_LOGI("brst", "%s", line);
+          ESP_LOGI("brst", "BURSTEND id=%u edges=%u trunc=%d",
+                   (unsigned) burst_id, (unsigned) edges, trunc ? 1 : 0);

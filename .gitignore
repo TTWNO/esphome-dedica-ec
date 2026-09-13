@@ -1,0 +1,9 @@
+# ESPHome build cache
+/.esphome/
+
+# Secrets — never commit (matches esphome/secrets.yaml too)
+secrets.yaml
+
+# Diagnostic capture logs (from reader.yaml sessions)
+*.txt
+*.csv

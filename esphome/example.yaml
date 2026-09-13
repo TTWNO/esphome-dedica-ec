@@ -1,0 +1,27 @@
+# =============================================================================
+#  example.yaml — copy this into your ESPHome directory to use the package.
+#  1) Replace YOUR_GH_USERNAME below.
+#  2) Create secrets.yaml (copy secrets.yaml.example, fill it in).
+#  3) esphome run example.yaml
+#  The Dedica then appears in Home Assistant via the native API.
+# =============================================================================
+
+substitutions:
+  name: dedica
+  friendly_name: Dedica
+
+packages:
+  # Pull the decoder straight from GitHub, pinned to a release tag.
+  dedica-ec: github://YOUR_GH_USERNAME/esphome-dedica-ec/esphome/dedica-ec.yaml@v1.0.0
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password

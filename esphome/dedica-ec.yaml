@@ -1,0 +1,136 @@
+# =============================================================================
+#  dedica-ec.yaml — shareable ESPHome package
+#  Real-time decoder for the De'Longhi Dedica EC-series button/LED board
+#  (GDS "PCB00571-01", ~500 Hz two-phase common-anode multiplex).
+#  Reverse-engineered non-invasively — see README.md.
+# =============================================================================
+#  Use from your own config:
+#    packages:
+#      dedica-ec: github://YOUR_GH_USERNAME/esphome-dedica-ec/esphome/dedica-ec.yaml@v1.0.0
+#  then add your own wifi: / api: / ota: (see example.yaml).
+#
+#  INPUT WIRING IS FIXED (the decoder reads the GPIO32..39 input register):
+#    E -> GPIO32   C -> GPIO34   D -> GPIO35   A (sense) -> GPIO36   B -> GPIO39
+#    each via a 10 kOhm series resistor; connector GND -> ESP GND.
+#  Optocoupler OUTPUT pins are remappable via the substitutions below.
+# =============================================================================
+
+substitutions:
+  name: dedica
+  friendly_name: Dedica
+  # Optocoupler outputs (button control). Any free output-capable GPIO.
+  pin_opto_1cup: GPIO25
+  pin_opto_2cup: GPIO26
+  pin_opto_steam: GPIO27
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          // Force the five signal lines to digital inputs so they appear in
+          // the GPIO_IN1 register the decoder reads.
+          pinMode(32, INPUT);  // E
+          pinMode(34, INPUT);  // C
+          pinMode(35, INPUT);  // D
+          pinMode(36, INPUT);  // A (button-sense)
+          pinMode(39, INPUT);  // B
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: INFO
+
+globals:
+  - { id: t_not_steam,  type: uint32_t, restore_value: no, initial_value: '0' }
+  - { id: t_not_coffee, type: uint32_t, restore_value: no, initial_value: '0' }
+
+# ---- the decoder: sample ~6 ms of the scan every 150 ms, classify -----------
+#  Modes differ by C in the "E+B" scan phase:
+#     0x81 "E...B" (C low)  = coffee   |   0x85 "EC..B" (C high) = steam
+#  A marker held solid >=1.5 s = READY; intermittent = heating (anode B gated).
+#  Buttons raise the A sense line: 0x99 "E.DAB" = 2-cup, 0x95 "EC.AB" = steam.
+#  (1-cup shorts E->GND and blanks the LEDs — no A pulse, so it is not sensed.)
+interval:
+  - interval: 150ms
+    then:
+      - lambda: |-
+          const uint32_t N = 3000;               // ~6 ms @ 500 kHz = >=3 frames
+          uint32_t c_steam = 0, c_coffee = 0, cact = 0, aHi = 0, c2cup = 0, csteam_btn = 0;
+          uint32_t nx = ESP.getCycleCount();
+          for (uint32_t i = 0; i < N; i++) {
+            nx += 480;                            // 240 MHz / 480 = 500 kHz
+            while ((int32_t)(ESP.getCycleCount() - nx) < 0) {}
+            uint8_t raw = REG_READ(GPIO_IN1_REG) & 0x9d;   // E,C,D,A,B
+            uint8_t led = raw & 0x8d;             // LED-state bits (drop A/sense)
+            if (led == 0x85 || led == 0x05) c_steam++;   // EC..B/EC.. (C high) = steam
+            else if (led == 0x81) c_coffee++;            // E...B (C low)      = coffee
+            if (led) cact++;
+            if (raw & 0x10) aHi++;                // A high = a button is down
+            if (raw == 0x99) c2cup++;             // E.DAB = 2-cup press
+            if (raw == 0x95) csteam_btn++;        // EC.AB = steam press
+          }
+          uint32_t now = millis();
+          bool on     = cact > (N / 3);           // lines active = powered
+          bool steam  = c_steam  > 300;           // >=0.6 ms of the marker held
+          bool coffee = c_coffee > 300;
+          if (!steam)  id(t_not_steam)  = now;    // any gap resets the "solid" timer
+          if (!coffee) id(t_not_coffee) = now;
+          id(bs_on).publish_state(on);
+          id(bs_steam_mode).publish_state(on && steam);
+          id(bs_coffee_mode).publish_state(on && coffee);
+          id(bs_steam_ready).publish_state(on && steam  && (now - id(t_not_steam)  > 1500));
+          id(bs_coffee_ready).publish_state(on && coffee && (now - id(t_not_coffee) > 1500));
+          id(bs_button).publish_state(aHi > 300);              // any physical button held
+          id(bs_2cup_pressed).publish_state(c2cup > 300);      // 2-cup (E.DAB / 0x99)
+          id(bs_steam_pressed).publish_state(csteam_btn > 300);// steam (EC.AB / 0x95)
+
+binary_sensor:
+  - { platform: template, id: bs_on,          name: "Machine On" }
+  - { platform: template, id: bs_steam_mode,  name: "Steam Mode" }
+  - { platform: template, id: bs_coffee_mode, name: "Coffee Mode" }
+  - platform: template
+    id: bs_steam_ready
+    name: "Steam Ready"          # rising edge = steam reached temperature
+    device_class: running
+  - platform: template
+    id: bs_coffee_ready
+    name: "Coffee Ready"
+    device_class: running
+  - platform: template
+    name: "Steam Heating"
+    device_class: heat
+    lambda: 'return id(bs_steam_mode).state && !id(bs_steam_ready).state;'
+  - { platform: template, id: bs_button,        name: "Button Pressed" }
+  - { platform: template, id: bs_2cup_pressed,  name: "2-Cup Pressed" }
+  - { platform: template, id: bs_steam_pressed, name: "Steam Pressed" }
+
+# ---- optocoupler outputs = simulated button presses -------------------------
+#  Requires a PC817 (or similar) across each switch's pads (S1/S2/S3).
+#  Without the optocouplers wired, these entities exist but do nothing.
+output:
+  - platform: gpio
+    pin: ${pin_opto_1cup}
+    id: opto_1cup
+  - platform: gpio
+    pin: ${pin_opto_2cup}
+    id: opto_2cup
+  - platform: gpio
+    pin: ${pin_opto_steam}
+    id: opto_steam
+
+button:
+  - platform: template
+    name: "Press 1-Cup"
+    on_press: [ output.turn_on: opto_1cup,  delay: 150ms, output.turn_off: opto_1cup ]
+  - platform: template
+    name: "Press 2-Cup"
+    on_press: [ output.turn_on: opto_2cup,  delay: 150ms, output.turn_off: opto_2cup ]
+  - platform: template
+    name: "Press Steam"
+    on_press: [ output.turn_on: opto_steam, delay: 150ms, output.turn_off: opto_steam ]
